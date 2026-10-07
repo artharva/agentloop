@@ -70,21 +70,31 @@ Before every model call, AgentLoop estimates the prompt size (about 4 characters
 `agentloop eval` runs a 20-task benchmark (8 easy, 8 medium, 4 hard; see [evals/README.md](evals/README.md)). Each task is copied into a temp folder and committed to git, then the agent runs with fixed budgets and auto-approval. After that, AgentLoop adds **hidden tests** and runs the whole suite itself to judge success. This means special-casing the visible tests fails.
 
 ```bash
-agentloop eval --version v1 --model gemini-flash-lite-latest --repeat 3
-agentloop eval --version v2 --model gemini-flash-lite-latest --repeat 3 --prompt prompts/system_v2.md
+agentloop eval --version v1 --model gemini-flash-lite-latest --min-interval 5
+agentloop eval --version v2 --model gemini-flash-lite-latest --min-interval 5 --prompt prompts/system_v2.md
 agentloop compare evals/results/v1.csv evals/results/v2.csv
 ```
 
-The experiment: **v1** uses the short baseline prompt (`system_v1.md`). **v2** changes one thing, the prompt (`system_v2.md`), which adds a step-by-step workflow and concrete tool-call examples. `--no-plan` gives a second experiment: plan mode on vs off.
+The experiment: **v1** uses the short baseline prompt (`system_v1.md`). **v2** changes one thing, the prompt (`system_v2.md`), which adds a step-by-step workflow, rules about tests (test edits are blocked, and hidden tests check the fix) and concrete tool-call examples. `--no-plan` gives a second experiment: plan mode on vs off.
+
+### Results
+
+One run of each version over all 20 tasks with `gemini-flash-lite-latest` on the free tier (7 October 2026), using the commands above. Raw results: [v1.csv](evals/results/v1.csv) and [v2.csv](evals/results/v2.csv).
 
 | Metric | v1 | v2 |
 | --- | --- | --- |
-| Pass rate (%) | _run eval_ | _run eval_ |
-| Avg steps per task | | |
-| Avg tokens per task | | |
-| Invalid tool calls | | |
-| Cheating attempts blocked | | |
-| Loops detected | | |
+| Pass rate (%) | 95.0 | 100.0 |
+| Easy / medium / hard pass rate (%) | 100 / 87.5 / 100 | 100 / 100 / 100 |
+| Avg steps per task | 9.5 | 10.1 |
+| Avg tokens per task | 21,877 | 26,892 |
+| Invalid tool calls | 0 | 0 |
+| Cheating attempts blocked | 1 | 0 |
+| Loops detected | 1 | 0 |
+
+- **v2 solved the one task v1 failed.** On m05 (`parse_duration`), v1 made every part of the regex optional, passed the visible tests and stopped, but an empty string still parsed as 0 seconds instead of raising an error. The hidden tests caught it. v2 made the same first edit, then searched for the docstring's rule "at least one must be present" and added the missing check.
+- **v2 had no blocked test edits and no loops.** Its prompt says test edits are blocked; v1's prompt doesn't. v1's blocked edit (m03) was an attempt to add assertions to a test file. It then re-ran the tests until loop detection stopped it, but its code fix was already correct, so the task passed. Details are in [v1_failures.md](evals/results/v1_failures.md).
+- **v2 costs about 23% more tokens.** 14 of the 20 tasks took the same number of steps under both prompts, and on those v2 used about 330 more input tokens per call, because its longer system prompt is sent with every call. The rest comes from extra checking steps on h01, h04, m05 and m06.
+- **Caveats.** This is one run per task, so a one-task difference could be chance; `--repeat 3` would show whether it holds, if your daily quota allows. Time per task (81 s for v1, 61 s for v2) is left out because it mostly reflects how busy Gemini was: v1 hit a slow patch on e02 to e04. One v1 run (m04) ended on a Gemini 503 error after the fix was already written, and still passed.
 
 Failure logs are written to `evals/results/<version>_failures.md`.
 
