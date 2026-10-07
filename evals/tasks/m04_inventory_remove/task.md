@@ -1,0 +1,1 @@
+Add a remove(name, qty=1) method to Inventory in inventory.py. It subtracts qty from the stock. It raises ValueError if qty is less than 1 or more than is in stock (an unknown item has 0 in stock). When an item's stock reaches 0 it disappears from items(). test_inventory.py describes the behaviour.

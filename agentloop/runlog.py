@@ -9,9 +9,9 @@ from pathlib import Path
 
 
 class RunLogger:
-    def __init__(self, runs_dir: str | Path = "runs"):
+    def __init__(self, runs_dir: str | Path = "runs", label: str | None = None):
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        self.run_id = f"{stamp}-{uuid.uuid4().hex[:6]}"
+        self.run_id = f"{stamp}-{label or uuid.uuid4().hex[:6]}"
         self.path = Path(runs_dir) / f"{self.run_id}.jsonl"
         self.path.parent.mkdir(parents=True, exist_ok=True)
 

@@ -1,0 +1,1 @@
+PriceService fetches prices from the backend far more often than it should: its cache is supposed to keep the most recently used prices, but frequently used items keep getting evicted. Find the root cause and fix it so test_service.py passes.

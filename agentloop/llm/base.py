@@ -30,6 +30,10 @@ class Message:
     # Set on tool messages: which call this result answers.
     tool_call_id: str | None = None
     name: str | None = None
+    # Set on tool messages: a short description of the call (e.g. "auth.py"),
+    # used when the result is trimmed to a stub.
+    summary: str = ""
+    trimmed: bool = False
     # Provider-specific payload to send back verbatim (e.g. Gemini thought
     # signatures). Other providers ignore it.
     raw: Any = None

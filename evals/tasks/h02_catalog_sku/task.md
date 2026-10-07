@@ -1,0 +1,1 @@
+Looking up products in the catalog fails with 'unknown product' even for products that are in the data. SKUs are stored and listed in uppercase, and lookups are case-insensitive. Find the root cause and fix it so test_catalog.py passes.

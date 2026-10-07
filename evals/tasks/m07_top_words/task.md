@@ -1,0 +1,1 @@
+Add top_words(text, n, stopwords=None) to wordstats.py. It returns the n most common words as (word, count) pairs, most common first, with ties broken alphabetically. Words are counted the same way as word_counts does, and stopwords are ignored case-insensitively. test_wordstats.py describes the behaviour.

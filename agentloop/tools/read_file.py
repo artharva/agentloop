@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, model_validator
 
-from agentloop.tools.base import Tool, ToolResult, truncate
+from agentloop.tools.base import Tool, ToolResult, read_text, truncate
 
 
 class ReadFileArgs(BaseModel):
@@ -20,19 +20,20 @@ class ReadFileArgs(BaseModel):
 class ReadFile(Tool):
     name = "read_file"
     description = (
-        "Read a text file from the repo. Returns the contents with line numbers. "
-        "Output is capped at 200 lines; use start_line/end_line to read further."
+        "Read a text file from the repo. Returns the contents with line numbers in the left "
+        "margin (the numbers are not part of the file). Output is capped at 200 lines; use "
+        "start_line/end_line to read further."
     )
     Args = ReadFileArgs
 
     def run(self, args: ReadFileArgs) -> ToolResult:
         path = self.workspace.resolve(args.path)
         if not path.exists():
-            return ToolResult.error(f"file '{args.path}' does not exist; check the path")
+            return ToolResult.error(f"file '{args.path}' does not exist; use list_files to see what exists")
         if path.is_dir():
-            return ToolResult.error(f"'{args.path}' is a directory, not a file")
+            return ToolResult.error(f"'{args.path}' is a directory; use list_files to see inside it")
         try:
-            text = path.read_text(encoding="utf-8")
+            text = read_text(path)
         except UnicodeDecodeError:
             return ToolResult.error(f"'{args.path}' is not a UTF-8 text file")
 

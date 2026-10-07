@@ -1,0 +1,1 @@
+Refactor report.py: the three report functions each repeat the same row-formatting code. Extract it into one function, format_row(values, widths) -> str, and make all three report functions use it. The output of every report must not change, and all tests must stay green (test_report.py includes a test for format_row).

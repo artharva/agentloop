@@ -1,62 +1,124 @@
 # AgentLoop
 
-A command-line coding agent written from scratch in Python. No LangChain, no agent framework: the loop, tools, safety layer and evaluation are all built by hand.
+A command-line coding agent written from scratch in Python. It takes a plain-English task and a repo, then reads, edits and tests code in a loop until the tests pass or it stops safely. There is no LangChain or other agent framework: the loop, tools, safety layer, context management and evaluation are all built by hand.
 
-> Status: **Phase 1, the bare loop.** The agent can read files and answer questions about a repo. Editing, tests and evals come in later phases.
+> Demo GIF: record one with `asciinema rec` (or ScreenToGif on Windows) while running the auth.py example below, and put it here.
 
 ## Install and run
 
 ```bash
 pip install -e ".[dev]"
-export GEMINI_API_KEY=...        # PowerShell: $env:GEMINI_API_KEY="..."
-agentloop run "what does utils.py do?" --repo examples/demo_repo
+export GEMINI_API_KEY=...            # Windows cmd: set GEMINI_API_KEY=...   PowerShell: $env:GEMINI_API_KEY="..."
+agentloop run "fix the failing test in auth.py" --repo examples/buggy_repo
 ```
 
-Get a free Gemini key at https://aistudio.google.com/apikey. Choose a different model with `--model` or `AGENTLOOP_MODEL`.
+Get a free key at https://aistudio.google.com/apikey. If `agentloop` isn't on your PATH, use `python -m agentloop.cli` instead. When it finishes, `git checkout -- examples/` resets the example.
 
-## How the loop works
+## What a run looks like
 
+1. **Safety check.** AgentLoop refuses to start if the repo has uncommitted changes, so every run can be undone with `git checkout -- .`.
+2. **Explore.** The model calls `list_files`, `run_tests`, `search_code` and `read_file`.
+3. **Plan.** It must submit a numbered plan with `submit_plan`. You approve it, edit it or stop the run. File edits are blocked until a plan is approved.
+4. **Edit.** Each change is shown as a coloured diff for you to approve: yes, no (with feedback to the agent), or all for the session.
+5. **Verify.** When the model says it is done, AgentLoop runs the tests itself. If they fail, the model is told so and keeps working. "Done" means the suite passes, not that the model said so.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    CLI[cli.py<br/>run / eval / compare] --> Loop[loop.py<br/>agent loop]
+    Loop -->|trimmed history + tool specs| LLM[llm/<br/>LLMClient: Gemini, fake]
+    LLM -->|text or tool calls| Loop
+    Loop --> Ctx[context.py<br/>token estimate + trimming]
+    Loop --> Tools[tools/<br/>8 schema-validated tools]
+    Tools --> Safety[safety.py<br/>paths, guardrails, allowlist]
+    Tools --> Approve[approval.py<br/>diff + plan approval]
+    Loop -->|done claim| Verify[pytest_runner.py<br/>tests decide success]
+    Loop --> Log[runlog.py<br/>JSONL per run]
 ```
-task ──► [system prompt + history] ──► LLMClient.chat()
-                ▲                            │
-                │                  tool calls? ── no ──► final answer
-                │                            │ yes
-                └──── tool results ◄── run each tool (validated, sandboxed)
-```
 
-One step means one model call. The run stops when the model answers in plain text, or when it hits the hard step limit (25 by default).
+Each component is one module with its own unit tests. The loop only talks to the `LLMClient` interface, so adding a provider (Groq, Ollama) is one new class.
 
-## Layout
-
-| Path | What it does |
+| Tool | What it does |
 | --- | --- |
-| `agentloop/cli.py` | typer commands (`run`, `version`) |
-| `agentloop/loop.py` | the agent loop; emits events to observers |
-| `agentloop/llm/` | `LLMClient` interface, Gemini provider, scripted fake for tests |
-| `agentloop/tools/` | `Tool` base class (pydantic args → JSON schema) and `read_file` |
-| `agentloop/safety.py` | `Workspace`: every path must stay inside the repo |
-| `agentloop/runlog.py` | writes each step to `runs/<run-id>.jsonl` |
-| `prompts/system_v1.md` | versioned system prompt |
-| `tests/` | unit tests using `FakeLLMClient`, no network needed |
+| `list_files` | Repo layout with line counts (skips .git, caches, venvs) |
+| `read_file` | File with line numbers, optional line range, capped at 200 lines |
+| `search_code` | Regex search, returns `path:line: text` |
+| `submit_plan` | Numbered plan for approval (plan mode) |
+| `edit_file` | Replace one exact, unique snippet |
+| `create_file` | New files only |
+| `run_tests` | pytest with a timeout; pass/fail counts plus the first failures |
+| `git_diff` | Everything changed so far, including new files |
 
-## Design decisions so far
+## Safety and guardrails
 
-- **Provider-neutral messages.** The loop never imports a provider SDK. Gemini's raw reply is passed back verbatim, so features like thought signatures keep working.
-- **Tool errors go to the model, not to a crash.** Bad arguments, unknown tools and paths outside the repo come back as an `Error: ...` tool result explaining how to fix the call.
-- **Schemas come from pydantic.** They are simplified (no `anyOf`/`null`/`title`) so every provider accepts them.
-- **Output is capped** at 200 lines per tool call, and the result says how to read the rest.
+All of these are enforced in code, not by asking the model nicely:
 
-## Tests
+- **Sandboxed paths.** Every path must resolve inside the repo. `..`, absolute paths, symlinks pointing outside, and `.git/` are rejected.
+- **Command allowlist.** The agent cannot run arbitrary commands. Only `python -m pytest`, `git diff`, `git status` and `git ls-files` can run, each with a timeout so an infinite loop in a test can't hang the run.
+- **Human approval** for every file write (coloured diff) and for the plan. `--yes` turns approvals off.
+- **No cheating.** Edits to test files, `conftest.py` and pytest config files (`pytest.ini`, `tox.ini`, `setup.cfg`, `pyproject.toml`) are rejected unless the task allows it. So is adding skip or xfail markers or `sys.exit` calls to code.
+- **Budgets.** Max steps, max tokens and max wall-clock time. When one is hit, the run stops with a summary.
+- **Loop detection.** The run stops if the same call with the same arguments happens 3 times with no file change in between, or after 6 failed tool calls in a row.
+
+## Context management
+
+Before every model call, AgentLoop estimates the prompt size (about 4 characters per token). Once it passes 75% of `--context-limit`, the oldest tool results are replaced with stubs such as `[read_file auth.py: 140 lines, omitted to save context; call the tool again if you need it]`. The 4 most recent results always stay in full. The system prompt is versioned in `prompts/`.
+
+## Evaluation
+
+`agentloop eval` runs a 20-task benchmark (8 easy, 8 medium, 4 hard; see [evals/README.md](evals/README.md)). Each task is copied into a temp folder and committed to git, then the agent runs with fixed budgets and auto-approval. After that, AgentLoop adds **hidden tests** and runs the whole suite itself to judge success. This means special-casing the visible tests fails.
 
 ```bash
-pytest
+agentloop eval --version v1 --model gemini-flash-lite-latest --repeat 3
+agentloop eval --version v2 --model gemini-flash-lite-latest --repeat 3 --prompt prompts/system_v2.md
+agentloop compare evals/results/v1.csv evals/results/v2.csv
 ```
 
-## Roadmap
+The experiment: **v1** uses the short baseline prompt (`system_v1.md`). **v2** changes one thing, the prompt (`system_v2.md`), which adds a step-by-step workflow and concrete tool-call examples. `--no-plan` gives a second experiment: plan mode on vs off.
 
-1. ✅ Bare loop: `read_file`, step limit, JSONL logs
-2. Toolset: `list_files`, `search_code`, `edit_file`, `create_file`, `run_tests`, `git_diff`, plus a 5-task eval harness
-3. Safety: approval diffs, command allowlist, budgets, pytest timeout, clean-repo check
-4. Context management: token counting and trimming of old tool output
-5. Plan mode, test-checked completion, test-file and config write protection, loop detection
-6. Full 20-task benchmark, v1 vs v2 experiment, demo GIF
+| Metric | v1 | v2 |
+| --- | --- | --- |
+| Pass rate (%) | _run eval_ | _run eval_ |
+| Avg steps per task | | |
+| Avg tokens per task | | |
+| Invalid tool calls | | |
+| Cheating attempts blocked | | |
+| Loops detected | | |
+
+Failure logs are written to `evals/results/<version>_failures.md`.
+
+## Design decisions
+
+- **Why snippet edits?** Rewriting whole files lets a model silently drop code it didn't read. Replacing one exact, unique snippet keeps changes small and reviewable. A wrong snippet fails loudly with a hint ("snippet not found; you included read_file's line numbers").
+- **Why no framework?** The point is to own the hard parts: tool schemas, error messages the model can recover from, context trimming, and deciding when a run is really done.
+- **Why tests decide success?** Models often claim "fixed" when they aren't. AgentLoop runs pytest itself after the last edit, and evals add hidden tests the agent never sees.
+- **Errors are data.** Bad arguments, unknown tools and blocked actions come back to the model as clear `Error: ...` tool results instead of crashing. They are also counted, since invalid calls measure tool design quality.
+- **Structural guardrails over prompt rules.** "Don't edit the tests" in a prompt is a suggestion. A write gate that rejects the edit is a rule.
+
+## Development
+
+```bash
+pytest                       # 120+ unit tests, no network or API key needed
+```
+
+The tests use `FakeLLMClient`, which returns scripted responses. `tests/test_benchmark.py` validates every benchmark task against its reference solution.
+
+```
+agentloop/
+  cli.py            typer commands: run, eval, compare
+  loop.py           the agent loop, budgets, verification, loop detection
+  session.py        wires workspace, safety, tools and loop together
+  llm/              LLMClient interface, Gemini provider, fake, throttle
+  tools/            Tool base class + one module per tool family
+  safety.py         paths, guardrails, command allowlist, git checks
+  approval.py       console and auto approvers
+  context.py        token estimates and trimming
+  pytest_runner.py  runs and summarises pytest
+  evals.py          benchmark harness, CSV results, failure log
+prompts/            system_v1.md, system_v2.md
+evals/tasks/        20 benchmark repos
+evals/results/      CSV + failure log per version
+examples/           demo_repo (questions), buggy_repo (a real fix)
+tests/              unit tests
+```

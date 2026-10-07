@@ -1,0 +1,1 @@
+load_config in config.py hides broken config files by silently returning the defaults. A missing file should give the defaults, but invalid JSON (or JSON that is not an object) must raise ConfigError naming the file. Fix it so the tests pass.

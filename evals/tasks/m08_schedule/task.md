@@ -1,0 +1,1 @@
+The meeting scheduler in schedule.py gives wrong answers: back-to-back meetings are reported as overlapping, and free slots are shown as '9:0-10:0' instead of '09:00-10:00'. Fix the bugs so test_schedule.py passes.
