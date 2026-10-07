@@ -51,3 +51,45 @@ def test_parses_function_calls_text_and_usage():
     assert out.tool_calls[0].arguments == {"path": "a.py"}
     assert out.tool_calls[0].id.startswith("call_")
     assert (out.usage.input_tokens, out.usage.output_tokens) == (100, 7)
+
+
+def test_falls_back_to_next_model_when_overloaded(monkeypatch):
+    from google.genai import errors
+
+    from agentloop.llm import gemini
+
+    monkeypatch.setattr(gemini.time, "sleep", lambda s: None)
+    client = gemini.GeminiClient("big-model", api_key="test", max_retries=1, fallbacks=["small-model"])
+    seen = []
+
+    def generate_content(model, contents, config):
+        seen.append(model)
+        if model == "big-model":
+            raise errors.ServerError(503, {"error": {"code": 503, "message": "high demand", "status": "UNAVAILABLE"}})
+        return types.GenerateContentResponse(
+            candidates=[types.Candidate(content=types.Content(role="model", parts=[types.Part(text="ok")]))]
+        )
+
+    monkeypatch.setattr(client._client.models, "generate_content", generate_content)
+    out = client.chat([Message("user", "hi")], [])
+    assert out.text == "ok"
+    assert seen == ["big-model", "big-model", "small-model"]
+    assert client.model == "small-model"
+
+
+def test_explicit_model_error_is_reported_without_fallback(monkeypatch):
+    import pytest
+    from google.genai import errors
+
+    from agentloop.llm import gemini
+    from agentloop.llm.base import LLMError
+
+    monkeypatch.setattr(gemini.time, "sleep", lambda s: None)
+    client = gemini.GeminiClient("retired-model", api_key="test", max_retries=0)
+
+    def generate_content(model, contents, config):
+        raise errors.ClientError(404, {"error": {"code": 404, "message": "model retired", "status": "NOT_FOUND"}})
+
+    monkeypatch.setattr(client._client.models, "generate_content", generate_content)
+    with pytest.raises(LLMError, match="404"):
+        client.chat([Message("user", "hi")], [])

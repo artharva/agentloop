@@ -66,6 +66,7 @@ class AgentLoop:
             self.emit({
                 "type": "model",
                 "step": step,
+                "model": self.llm.model,
                 "text": response.text,
                 "tool_calls": [tc.name for tc in response.tool_calls],
                 "input_tokens": response.usage.input_tokens,

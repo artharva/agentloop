@@ -6,6 +6,7 @@ import os
 import time
 import uuid
 
+import httpx
 from google import genai
 from google.genai import errors, types
 
@@ -19,11 +20,31 @@ from agentloop.llm.base import (
     Usage,
 )
 
-RETRYABLE = {429, 500, 503}
+RETRYABLE = {429, 500, 503, 504}
+REQUEST_TIMEOUT_MS = 90_000
+
+
+def is_retryable(exc: Exception) -> bool:
+    """Overload, rate limit, server timeout, or a dropped connection."""
+    if isinstance(exc, errors.APIError):
+        return exc.code in RETRYABLE
+    return isinstance(exc, (httpx.TimeoutException, httpx.NetworkError))
+
+
+def describe(exc: Exception) -> str:
+    if isinstance(exc, errors.APIError):
+        return f"Gemini API error {exc.code}: {exc.message}"
+    return f"Gemini request failed: {type(exc).__name__}: {exc}"
 
 
 class GeminiClient(LLMClient):
-    def __init__(self, model: str, api_key: str | None = None, max_retries: int = 4):
+    def __init__(
+        self,
+        model: str,
+        api_key: str | None = None,
+        max_retries: int = 3,
+        fallbacks: list[str] | None = None,
+    ):
         key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not key:
             raise LLMError(
@@ -32,7 +53,10 @@ class GeminiClient(LLMClient):
             )
         self.model = model
         self.max_retries = max_retries
-        self._client = genai.Client(api_key=key)
+        self.fallbacks = list(fallbacks or [])
+        self._client = genai.Client(
+            api_key=key, http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT_MS)
+        )
 
     def chat(self, messages: list[Message], tools: list[ToolSpec]) -> Response:
         system, contents = to_gemini_contents(messages)
@@ -43,17 +67,29 @@ class GeminiClient(LLMClient):
             else None,
             temperature=0,
         )
+        while True:
+            try:
+                return self._generate(contents, config)
+            except (errors.APIError, httpx.HTTPError) as exc:
+                if is_retryable(exc) and self.fallbacks:
+                    # Still failing after retries: switch to the next model
+                    # for the rest of the run.
+                    self.model = self.fallbacks.pop(0)
+                    continue
+                raise LLMError(describe(exc)) from exc
+
+    def _generate(self, contents, config) -> Response:
         for attempt in range(self.max_retries + 1):
             try:
                 resp = self._client.models.generate_content(
                     model=self.model, contents=contents, config=config
                 )
                 return from_gemini_response(resp)
-            except errors.APIError as exc:
-                if exc.code in RETRYABLE and attempt < self.max_retries:
+            except (errors.APIError, httpx.HTTPError) as exc:
+                if is_retryable(exc) and attempt < self.max_retries:
                     time.sleep(2 ** (attempt + 1))
                     continue
-                raise LLMError(f"Gemini API error {exc.code}: {exc.message}") from exc
+                raise
         raise AssertionError("unreachable")
 
 

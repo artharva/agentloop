@@ -31,8 +31,12 @@ def main() -> None:
 def console_observer(event: dict) -> None:
     kind = event["type"]
     if kind == "start":
+        console_observer.model = event["model"]
         console.print(f"[bold]Task:[/] {event['task']}  [dim]({event['model']}, max {event['max_steps']} steps)[/]")
-    elif kind == "model" and event["tool_calls"]:
+    elif kind == "model" and event["model"] != getattr(console_observer, "model", None):
+        console_observer.model = event["model"]
+        console.print(f"[yellow]Default model was overloaded; switched to {event['model']}[/]")
+    if kind == "model" and event["tool_calls"]:
         if event["text"]:
             console.print(f"[dim]{event['text']}[/]")
     elif kind == "tool":
@@ -48,7 +52,7 @@ def console_observer(event: dict) -> None:
 def run(
     task: str = typer.Argument(..., help="What you want the agent to do, in plain English."),
     repo: Path = typer.Option(Path("."), "--repo", "-r", help="Path to the project the agent works on."),
-    model: str = typer.Option(None, "--model", "-m", envvar="AGENTLOOP_MODEL", help="Model name (default: gemini-2.5-flash)."),
+    model: str = typer.Option(None, "--model", "-m", envvar="AGENTLOOP_MODEL", help="Model name (default: gemini-flash-latest, falling back to gemini-flash-lite-latest)."),
     max_steps: int = typer.Option(25, "--max-steps", min=1, help="Hard limit on model calls."),
     prompt: Path = typer.Option(PROMPTS_DIR / "system_v1.md", "--prompt", help="System prompt file."),
     runs_dir: Path = typer.Option(Path("runs"), "--runs-dir", help="Where to write the JSONL run log."),
