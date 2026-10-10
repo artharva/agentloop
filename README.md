@@ -14,6 +14,18 @@ agentloop run "fix the failing test in auth.py" --repo examples/buggy_repo
 
 Get a free key at https://aistudio.google.com/apikey. If `agentloop` isn't on your PATH, use `python -m agentloop.cli` instead. When it finishes, `git checkout -- examples/` resets the example.
 
+### Through the LLM Gateway
+
+AgentLoop can send every model call through the LLM Gateway (Final Year project 2) instead of calling Gemini directly. The gateway gives it fallback across Gemini, Groq and Ollama, a rate limit and monthly token budget, caching, and a dashboard showing AgentLoop's requests, tokens and cost.
+
+```bash
+export LLM_GATEWAY_URL=http://localhost:8080
+export LLM_GATEWAY_KEY=gw_...        # create a key on the gateway dashboard's Keys tab
+agentloop run "fix the failing test in auth.py" --repo examples/buggy_repo --model gateway:smart
+```
+
+Any gateway alias works after `gateway:` (`fast`, `smart`, `balanced`, `local`). The gateway API is text only, so the client in `agentloop/llm/gateway.py` lists the tools in the system prompt and reads a JSON `{"tool_calls": [...]}` reply as tool calls. It waits out `Retry-After` on 429 and 503 (up to 30 s) and stops at once when the key's monthly budget is used up.
+
 ## What a run looks like
 
 1. **Safety check.** AgentLoop refuses to start if the repo has uncommitted changes, so every run can be undone with `git checkout -- .`.
@@ -27,7 +39,7 @@ Get a free key at https://aistudio.google.com/apikey. If `agentloop` isn't on yo
 ```mermaid
 flowchart LR
     CLI[cli.py<br/>run / eval / compare] --> Loop[loop.py<br/>agent loop]
-    Loop -->|trimmed history + tool specs| LLM[llm/<br/>LLMClient: Gemini, fake]
+    Loop -->|trimmed history + tool specs| LLM[llm/<br/>LLMClient: Gemini, LLM Gateway, fake]
     LLM -->|text or tool calls| Loop
     Loop --> Ctx[context.py<br/>token estimate + trimming]
     Loop --> Tools[tools/<br/>8 schema-validated tools]
